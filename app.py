@@ -1902,6 +1902,174 @@ def calcular_metricas_mensais_operacionais(df, data_inicio, data_fim):
         })
 
     return pd.DataFrame(linhas)
+def grafico_volume_executivo(metricas_mensais):
+    if metricas_mensais.empty:
+        return None
+
+    fig = px.bar(
+        metricas_mensais,
+        x="mes",
+        y=["chamados_abertos", "chamados_urgentes"],
+        barmode="group",
+        text_auto=True,
+        title="Chamados por mês"
+    )
+
+    fig.add_scatter(
+        x=metricas_mensais["mes"],
+        y=metricas_mensais["chamados_abertos"].rolling(2, min_periods=1).mean(),
+        mode="lines+markers",
+        name="Tendência"
+    )
+
+    fig.update_layout(
+        height=480,
+        xaxis_title="Mês",
+        yaxis_title="Quantidade",
+        legend_title="Indicadores"
+    )
+
+    return fig    
+def calcular_crescimento_ano_anterior(df_sidebar, data_inicio, data_fim):
+    if data_inicio is None or data_fim is None:
+        return None
+
+    if "data_de_criacao" not in df_sidebar.columns:
+        return None
+
+    inicio_atual = pd.Timestamp(data_inicio).date()
+    fim_atual = pd.Timestamp(data_fim).date()
+
+    inicio_anterior = pd.Timestamp(data_inicio) - pd.DateOffset(years=1)
+    fim_anterior = pd.Timestamp(data_fim) - pd.DateOffset(years=1)
+
+    inicio_anterior = inicio_anterior.date()
+    fim_anterior = fim_anterior.date()
+
+    periodo_atual = df_sidebar[
+        df_sidebar["data_de_criacao"].notna()
+        & (df_sidebar["data_de_criacao"].dt.date >= inicio_atual)
+        & (df_sidebar["data_de_criacao"].dt.date <= fim_atual)
+    ]
+
+    periodo_anterior = df_sidebar[
+        df_sidebar["data_de_criacao"].notna()
+        & (df_sidebar["data_de_criacao"].dt.date >= inicio_anterior)
+        & (df_sidebar["data_de_criacao"].dt.date <= fim_anterior)
+    ]
+
+    atual = len(periodo_atual)
+    anterior = len(periodo_anterior)
+
+    if anterior == 0:
+        return {
+            "atual": atual,
+            "anterior": anterior,
+            "variacao_pct": None
+        }
+
+    variacao_pct = ((atual - anterior) / anterior) * 100
+
+    return {
+        "atual": atual,
+        "anterior": anterior,
+        "variacao_pct": variacao_pct
+    }
+def calcular_performance_sla_mensal(df, data_inicio, data_fim):
+    if "data_de_criacao" not in df.columns:
+        return pd.DataFrame()
+
+    df = df.copy()
+    df = df[df["data_de_criacao"].notna()]
+
+    if df.empty:
+        return pd.DataFrame()
+
+    data_inicio_ref = pd.Timestamp(data_inicio)
+    data_fim_ref = pd.Timestamp(data_fim)
+
+    mes_inicio = data_inicio_ref.to_period("M")
+    mes_fim = data_fim_ref.to_period("M")
+
+    meses = pd.period_range(
+        start=mes_inicio,
+        end=mes_fim,
+        freq="M"
+    )
+
+    if len(meses) == 0:
+        return pd.DataFrame()
+
+    linhas = []
+
+    for mes in meses:
+        chamados_mes = df[
+            df["data_de_criacao"].dt.to_period("M") == mes
+        ]
+
+        total_mes = len(chamados_mes)
+
+        finalizados_mes = 0
+        if "data_de_finalizacao" in chamados_mes.columns:
+            finalizados_mes = chamados_mes[
+                chamados_mes["data_de_finalizacao"].notna()
+                & (
+                    chamados_mes["data_de_finalizacao"].dt.to_period("M")
+                    == chamados_mes["data_de_criacao"].dt.to_period("M")
+                )
+            ].shape[0]
+
+        eficiencia = (
+            (finalizados_mes / total_mes) * 100
+            if total_mes > 0
+            else 0
+        )
+
+        sla_mes = 0
+
+        if (
+            "sla_de_deadline_cumprido" in chamados_mes.columns
+            and "data_de_finalizacao" in chamados_mes.columns
+            and total_mes > 0
+        ):
+            qtd_sla_ok = chamados_mes[
+                chamados_mes["data_de_finalizacao"].notna()
+                & chamados_mes["sla_de_deadline_cumprido"]
+                    .astype(str)
+                    .str.lower()
+                    .str.strip()
+                    .isin(["sim", "s"])
+            ].shape[0]
+
+            sla_mes = (qtd_sla_ok / total_mes) * 100
+
+        fora_mes_abertura = 0
+        if "data_de_finalizacao" in chamados_mes.columns:
+            fora_mes_abertura = chamados_mes[
+                chamados_mes["data_de_finalizacao"].notna()
+                & (
+                    chamados_mes["data_de_finalizacao"].dt.to_period("M")
+                    != chamados_mes["data_de_criacao"].dt.to_period("M")
+                )
+            ].shape[0]
+
+        pct_fora_mes = (
+            (fora_mes_abertura / total_mes) * 100
+            if total_mes > 0
+            else 0
+        )
+
+        linhas.append({
+            "mes": str(mes),
+            "total_chamados": total_mes,
+            "finalizados": finalizados_mes,
+            "eficiencia": eficiencia,
+            "sla_deadline": sla_mes,
+            "fora_mes_abertura": fora_mes_abertura,
+            "pct_fora_mes_abertura": pct_fora_mes,
+        })
+
+    return pd.DataFrame(linhas)
 st.title("Painel Conselho TI")
 st.caption("Análise mensal de chamados para apresentação ao Conselho")
 
@@ -1966,6 +2134,19 @@ if uploaded_file:
             data_fim
         )
         metricas_mensais = calcular_metricas_mensais_operacionais(
+            df_sidebar,
+            data_inicio,
+            data_fim
+        )
+        performance_sla = calcular_performance_sla_mensal(
+            df_sidebar,
+            data_inicio,
+            data_fim
+        )
+        st.caption(
+            f"Auditoria Performance: período usado = {data_inicio} até {data_fim}"
+        )
+        crescimento_ano_anterior = calcular_crescimento_ano_anterior(
             df_sidebar,
             data_inicio,
             data_fim
@@ -2054,8 +2235,10 @@ if uploaded_file:
                 key="download_apresentacao_executiva",
             )
 
-        tab_dashboard, tab_comparativo, tab_backlog,  tab_aging, tab_operacao, tab_resumo, tab_dados = st.tabs(
+        tab_visao, tab_performance, tab_dashboard, tab_comparativo, tab_backlog,  tab_aging, tab_operacao, tab_resumo, tab_dados = st.tabs(
             [
+                "Visão Executiva",
+                "Performance e SLA",
                 "Dashboard",
                 "Comparativo Mensal",
                 "Backlog",
@@ -2065,7 +2248,241 @@ if uploaded_file:
                 "Dados"
             ]
         )
+        with tab_visao:
+            st.caption("Métricas")
+            st.title("Suporte Interno - Volume de Chamados")
 
+            st.divider()
+
+            coluna_grafico, coluna_cards = st.columns([2.2, 1])
+
+            with coluna_grafico:
+                fig_executivo = grafico_volume_executivo(metricas_mensais)
+
+                if fig_executivo:
+                    st.plotly_chart(
+                        fig_executivo,
+                        use_container_width=True,
+                        key="grafico_visao_executiva"
+                    )
+                else:
+                    st.info("Não há dados suficientes para montar a visão executiva.")
+
+            with coluna_cards:
+                st.metric(
+                    "Total do período",
+                    f"{total_chamados:,}",
+                    help="Total de chamados registrados no período filtrado"
+                )
+
+                st.metric(
+                    "Finalizados",
+                    f"{finalizados:,}"
+                )
+
+                st.metric(
+                    "Em aberto",
+                    f"{abertos:,}"
+                )
+
+                st.metric(
+                    "Backlog atual",
+                    f"{backlog_atual:,}"
+                )
+
+            st.divider()
+
+            st.subheader("Status dos Chamados")
+
+            percentual_finalizados = (finalizados / total_chamados * 100) if total_chamados else 0
+            percentual_abertos = (abertos / total_chamados * 100) if total_chamados else 0
+
+            s1, s2, s3 = st.columns(3)
+
+            s1.metric("Finalizados", f"{percentual_finalizados:.2f}%")
+            s2.metric("Em andamento", f"{percentual_abertos:.2f}%")
+            s3.metric("Em pausa / espera", "0.00%")
+
+            st.divider()
+
+            st.subheader("Leitura Executiva")
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            variacao_chamados_txt = "Sem comparação"
+
+            if (
+                crescimento_ano_anterior is not None
+                and crescimento_ano_anterior["variacao_pct"] is not None
+            ):
+                variacao_chamados_txt = (
+                    f"{crescimento_ano_anterior['variacao_pct']:+.2f}% "
+                    "vs mesmo período do ano anterior"
+            )
+            if crescimento_ano_anterior is not None:
+                st.caption(
+                    f"Base crescimento: "
+                    f"{crescimento_ano_anterior['atual']} chamados no período atual "
+                    f"vs {crescimento_ano_anterior['anterior']} no mesmo período anterior."
+                )
+
+            c1.metric(
+                "Crescimento",
+                variacao_chamados_txt
+            )
+
+            status_sla = "Acompanhar"
+            if sla_deadline is not None:
+                if sla_deadline >= 95:
+                    status_sla = "Excelente"
+                elif sla_deadline >= 90:
+                    status_sla = "Estável"
+                else:
+                    status_sla = "Atenção"
+
+            c2.metric(
+                "SLA",
+                status_sla
+            )
+
+            media_urgentes = 0
+            if not metricas_mensais.empty:
+                media_urgentes = metricas_mensais["chamados_urgentes"].mean()
+
+            c3.metric(
+                "Urgências",
+                f"Média {media_urgentes:.1f}/mês"
+            )
+
+            maturidade = "Em evolução"
+            if backlog_atual <= 10 and sla_deadline is not None and sla_deadline >= 90:
+                maturidade = "Equilibrado"
+            elif backlog_atual > 30:
+                maturidade = "Atenção"
+
+            c4.metric(
+                "Maturidade",
+                maturidade
+            )
+
+        with tab_performance:
+            st.caption("Performance")
+            st.title("Suporte Interno - Performance e SLA")
+
+            if performance_sla.empty:
+                st.info("Não há dados suficientes para calcular performance e SLA.")
+            else:
+                resolvidos_media = performance_sla["eficiencia"].mean()
+                sla_media = performance_sla["sla_deadline"].mean()
+                fora_mes_media = performance_sla["pct_fora_mes_abertura"].mean()
+
+                k1, k2, k3 = st.columns(3)
+
+                k1.metric(
+                    "Resolvidos no mês",
+                    f"{resolvidos_media:.2f}%"
+                )
+
+                k2.metric(
+                    "Cumprimento de prazo",
+                    f"{sla_media:.2f}%"
+                )
+
+                k3.metric(
+                    "Fora do mês de abertura",
+                    f"{fora_mes_media:.2f}%"
+                )
+
+                st.divider()
+
+                g1, g2 = st.columns(2)
+
+                fig_eficiencia = px.line(
+                    performance_sla,
+                    x="mes",
+                    y="eficiencia",
+                    markers=True,
+                    text="eficiencia",
+                    title="Eficiência mensal"
+                )
+
+                fig_eficiencia.update_traces(
+                    texttemplate="%{text:.2f}%",
+                    textposition="top center"
+                )
+
+                fig_eficiencia.update_layout(
+                    yaxis_title="Percentual",
+                    xaxis_title="Mês"
+                )
+
+                g1.plotly_chart(
+                    fig_eficiencia,
+                    use_container_width=True,
+                    key="grafico_eficiencia_mensal"
+                )
+
+                fig_sla = px.bar(
+                    performance_sla,
+                    x="mes",
+                    y="sla_deadline",
+                    text="sla_deadline",
+                    title="Cumprimento de SLA"
+                )
+
+                fig_sla.update_traces(
+                    texttemplate="%{text:.2f}%",
+                    textposition="outside"
+                )
+
+                fig_sla.update_layout(
+                    yaxis_title="Percentual",
+                    xaxis_title="Mês"
+                )
+
+                g2.plotly_chart(
+                    fig_sla,
+                    use_container_width=True,
+                    key="grafico_sla_mensal"
+                )
+
+                st.divider()
+
+                c1, c2 = st.columns(2)
+
+                melhor_mes = performance_sla.sort_values(
+                    "eficiencia",
+                    ascending=False
+                ).iloc[0]
+
+                c1.info(
+                    f"⭐ Pico de eficiência em **{melhor_mes['mes']}**, "
+                    f"com {melhor_mes['eficiencia']:.2f}% dos chamados resolvidos."
+                )
+
+                if sla_media >= 95:
+                    c2.success(
+                        f"✅ Cumprimento médio de SLA acima de 95% "
+                        f"({sla_media:.2f}%), indicando estabilidade operacional."
+                    )
+                elif sla_media >= 90:
+                    c2.info(
+                        f"📌 Cumprimento médio de SLA em nível estável "
+                        f"({sla_media:.2f}%)."
+                    )
+                else:
+                    c2.warning(
+                        f"⚠️ Cumprimento médio de SLA abaixo de 90% "
+                        f"({sla_media:.2f}%). Requer atenção."
+                    )
+
+                st.subheader("Tabela de performance mensal")
+
+                st.dataframe(
+                    performance_sla,
+                    use_container_width=True,
+                    hide_index=True
+                )
         with tab_dashboard:
             st.subheader("Indicadores principais")
 
