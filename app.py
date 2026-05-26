@@ -1529,11 +1529,14 @@ def gerar_apresentacao_executiva(
     dados_insuficientes,
     resumo_executivo,
     df_filtrado,
+    metricas_mensais,
+    performance_sla,
+    backlog_executivo,
 ):
     prs = Presentation()
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
-    total_slides = 8
+    total_slides = 11
 
     periodo_txt = formatar_periodo_analisado(data_inicio, data_fim)
     gerado_em = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -1798,13 +1801,128 @@ def gerar_apresentacao_executiva(
         for indice, texto in enumerate(recomendacoes)
     )
 
+    slide_visao = _novo_slide_executivo(prs)
+    adicionar_faixa_cabecalho(
+        slide_visao,
+        "Visão Executiva",
+        "Volume mensal de chamados, urgências e tendência"
+    )
+    adicionar_rodape_executivo(slide_visao, 8, total_slides)
+
+    if metricas_mensais is not None and not metricas_mensais.empty:
+        tabela_visao = metricas_mensais[
+            ["mes", "chamados_abertos", "chamados_urgentes"]
+        ].copy()
+
+        adicionar_tabela_dataframe(
+            slide_visao,
+            tabela_visao,
+            Inches(0.7),
+            Inches(1.35),
+            Inches(12),
+            Inches(4.8),
+        )
+    else:
+        adicionar_caixa_texto(
+            slide_visao,
+            "Sem dados disponíveis para visão executiva.",
+            Inches(0.8),
+            Inches(1.8),
+            Inches(11),
+            Inches(1),
+            tamanho=16,
+        )
+
+    slide_performance = _novo_slide_executivo(prs)
+    adicionar_faixa_cabecalho(
+        slide_performance,
+        "Performance e SLA",
+        "Eficiência mensal e cumprimento de prazo"
+    )
+    adicionar_rodape_executivo(slide_performance, 9, total_slides)
+
+    if performance_sla is not None and not performance_sla.empty:
+        tabela_performance = performance_sla[
+            ["mes", "total_chamados", "finalizados", "eficiencia", "sla_deadline"]
+        ].copy()
+
+        tabela_performance["eficiencia"] = tabela_performance["eficiencia"].map(lambda x: f"{x:.2f}%")
+        tabela_performance["sla_deadline"] = tabela_performance["sla_deadline"].map(lambda x: f"{x:.2f}%")
+
+        adicionar_tabela_dataframe(
+            slide_performance,
+            tabela_performance,
+            Inches(0.7),
+            Inches(1.35),
+            Inches(12),
+            Inches(4.8),
+        )
+    else:
+        adicionar_caixa_texto(
+            slide_performance,
+            "Sem dados disponíveis para performance e SLA.",
+            Inches(0.8),
+            Inches(1.8),
+            Inches(11),
+            Inches(1),
+            tamanho=16,
+        )
+
+    slide_backlog_exec = _novo_slide_executivo(prs)
+    adicionar_faixa_cabecalho(
+        slide_backlog_exec,
+        "Backlog Mensal",
+        "Backlog inicial, acúmulo atual e baixas do estoque herdado"
+    )
+    adicionar_rodape_executivo(slide_backlog_exec, 10, total_slides)
+
+    if backlog_executivo:
+        cards_backlog = [
+            ("Total abertos", f"{backlog_executivo['total_abertos']:,}"),
+            ("Backlog inicial", f"{backlog_executivo['backlog_inicial']:,}"),
+            ("Base operacional", f"{backlog_executivo['base_operacional']:,}"),
+            ("Fechados", f"{backlog_executivo['finalizados']:,}"),
+            ("Em atendimento", f"{backlog_executivo['em_atendimento']:,}"),
+            ("Em pausa", f"{backlog_executivo['em_pausa']:,}"),
+        ]
+
+        for indice, (rotulo, valor) in enumerate(cards_backlog):
+            linha = indice // 3
+            coluna = indice % 3
+            adicionar_card_kpi(
+                slide_backlog_exec,
+                rotulo,
+                valor,
+                Inches(0.7) + coluna * Inches(4.1),
+                Inches(1.35) + linha * Inches(1.75),
+                Inches(3.7),
+                Inches(1.35),
+            )
+
+    if (
+        metricas_mensais is not None
+        and not metricas_mensais.empty
+        and "backlog_herdado_finalizado" in metricas_mensais.columns
+    ):
+        tabela_backlog = metricas_mensais[
+            ["mes", "backlog_inicial", "backlog_herdado_finalizado", "backlog_final"]
+        ].copy()
+
+        adicionar_tabela_dataframe(
+            slide_backlog_exec,
+            tabela_backlog,
+            Inches(0.7),
+            Inches(4.7),
+            Inches(12),
+            Inches(1.6),
+        )
     slide_recomendacoes = _novo_slide_executivo(prs)
     adicionar_faixa_cabecalho(
         slide_recomendacoes,
         "Recomendações ao Conselho",
         "Próximos passos sugeridos com base nos indicadores",
     )
-    adicionar_rodape_executivo(slide_recomendacoes, 8, total_slides)
+    adicionar_rodape_executivo(slide_recomendacoes, 11, total_slides)
     adicionar_caixa_texto(
         slide_recomendacoes,
         texto_recomendacoes,
@@ -2070,6 +2188,86 @@ def calcular_performance_sla_mensal(df, data_inicio, data_fim):
         })
 
     return pd.DataFrame(linhas)
+
+def calcular_backlog_executivo(df, data_inicio, data_fim):
+    if "data_de_criacao" not in df.columns:
+        return {}
+
+    df = df.copy()
+    df = df[df["data_de_criacao"].notna()]
+
+    inicio = pd.Timestamp(data_inicio)
+    fim = pd.Timestamp(data_fim)
+
+    backlog_inicial_df = df[
+        (df["data_de_criacao"] < inicio)
+        & (
+            df["data_de_finalizacao"].isna()
+            | (df["data_de_finalizacao"] >= inicio)
+        )
+    ]
+
+    chamados_periodo = df[
+        (df["data_de_criacao"].dt.date >= inicio.date())
+        & (df["data_de_criacao"].dt.date <= fim.date())
+    ]
+
+    finalizados_periodo = df[
+        df["data_de_finalizacao"].notna()
+        & (df["data_de_finalizacao"].dt.date >= inicio.date())
+        & (df["data_de_finalizacao"].dt.date <= fim.date())
+    ]
+
+    em_atendimento = df[
+        (df["data_de_criacao"] <= fim)
+        & (
+            df["data_de_finalizacao"].isna()
+            | (df["data_de_finalizacao"] > fim)
+        )
+    ]
+
+    em_pausa = pd.DataFrame()
+
+    if "ultima_situacao" in em_atendimento.columns:
+        em_pausa = em_atendimento[
+            em_atendimento["ultima_situacao"]
+            .astype(str)
+            .str.lower()
+            .str.contains("pausa|espera|aguard", na=False)
+        ]
+
+    total = len(chamados_periodo)
+    backlog_inicial = len(backlog_inicial_df)
+    base_operacional = total + backlog_inicial
+
+    finalizados = len(finalizados_periodo)
+    
+    em_pausa = pd.DataFrame()
+
+    if "ultima_situacao" in em_atendimento.columns:
+        em_pausa = em_atendimento[
+            em_atendimento["ultima_situacao"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .eq("em pausa")
+        ]
+
+    pausa = len(em_pausa)
+    atendimento = len(em_atendimento) - pausa
+    
+
+    return {
+        "backlog_inicial": backlog_inicial,
+        "total_abertos": total,
+        "base_operacional": base_operacional,
+        "finalizados": finalizados,
+        "em_atendimento": atendimento,
+        "em_pausa": pausa,
+        "pct_finalizados": (finalizados / base_operacional * 100) if base_operacional else 0,
+        "pct_atendimento": (atendimento / base_operacional * 100) if base_operacional else 0,
+        "pct_pausa": (pausa / base_operacional * 100) if base_operacional else 0,
+    }
 st.title("Painel Conselho TI")
 st.caption("Análise mensal de chamados para apresentação ao Conselho")
 
@@ -2143,6 +2341,11 @@ if uploaded_file:
             data_inicio,
             data_fim
         )
+        backlog_executivo = calcular_backlog_executivo(
+            df_sidebar,
+            data_inicio,
+            data_fim
+        )
         st.caption(
             f"Auditoria Performance: período usado = {data_inicio} até {data_fim}"
         )
@@ -2208,6 +2411,9 @@ if uploaded_file:
                             dados_insuficientes_insights,
                             resumo_executivo,
                             df_filtrado,
+                            metricas_mensais,
+                            performance_sla,
+                            backlog_executivo,
                         )
                         st.session_state["pptx_executivo"] = pptx_bytes
                         st.session_state["pptx_executivo_nome"] = (
@@ -2235,10 +2441,11 @@ if uploaded_file:
                 key="download_apresentacao_executiva",
             )
 
-        tab_visao, tab_performance, tab_dashboard, tab_comparativo, tab_backlog,  tab_aging, tab_operacao, tab_resumo, tab_dados = st.tabs(
+        tab_visao, tab_performance, tab_backlog_exec, tab_dashboard, tab_comparativo, tab_backlog,  tab_aging, tab_operacao, tab_resumo, tab_dados = st.tabs(
             [
                 "Visão Executiva",
                 "Performance e SLA",
+                "Backlog Mensal",
                 "Dashboard",
                 "Comparativo Mensal",
                 "Backlog",
@@ -2483,6 +2690,102 @@ if uploaded_file:
                     use_container_width=True,
                     hide_index=True
                 )
+        with tab_backlog_exec:
+            st.caption("Operações")
+            st.title("Backlog Mensal - Chamados")
+
+            if not backlog_executivo:
+                st.info("Não há dados suficientes para calcular o backlog mensal executivo.")
+            else:
+                c1, c2, c3 = st.columns(3)
+
+                c1.metric(
+                    "Total de chamados abertos",
+                    f"{backlog_executivo['total_abertos']:,}"
+                )
+
+                c2.metric(
+                    "Backlog inicial",
+                    f"{backlog_executivo['backlog_inicial']:,}",
+                    help="Chamados herdados do período anterior ainda em aberto no início do período."
+                )
+
+                c3.metric(
+                    "Acúmulo atual",
+                    f"{backlog_atual:,}"
+                )
+
+                st.divider()
+
+                s1, s2, s3 = st.columns(3)
+
+                s1.metric(
+                    "Fechados",
+                    f"{backlog_executivo['finalizados']:,}",
+                    f"{backlog_executivo['pct_finalizados']:.2f}%"
+                )
+
+                s2.metric(
+                    "Em atendimento",
+                    f"{backlog_executivo['em_atendimento']:,}",
+                    f"{backlog_executivo['pct_atendimento']:.2f}%"
+                )
+
+                s3.metric(
+                    "Em pausa",
+                    f"{backlog_executivo['em_pausa']:,}",
+                    f"{backlog_executivo['pct_pausa']:.2f}%"
+                )
+
+                st.divider()
+
+                st.subheader("Backlogs finalizados por mês")
+
+                if (
+                    not metricas_mensais.empty
+                    and "backlog_herdado_finalizado" in metricas_mensais.columns
+                ):
+                    fig_backlogs_finalizados = px.bar(
+                        metricas_mensais,
+                        x="mes",
+                        y="backlog_herdado_finalizado",
+                        text="backlog_herdado_finalizado",
+                        title="Backlogs finalizados por mês"
+                    )
+
+                    fig_backlogs_finalizados.update_traces(
+                        textposition="outside"
+                    )
+
+                    fig_backlogs_finalizados.update_layout(
+                        xaxis_title="Mês",
+                        yaxis_title="Quantidade"
+                    )
+
+                    st.plotly_chart(
+                        fig_backlogs_finalizados,
+                        use_container_width=True,
+                        key="grafico_backlogs_finalizados_exec"
+                    )
+                else:
+                    st.info("Sem dados para backlogs finalizados por mês.")
+
+                st.divider()
+
+                st.warning(
+                    "Backlog representa a quantidade de chamados que ainda não foram finalizados, "
+                    "ou seja, demandas pendentes que estão em atendimento ou aguardando resolução. "
+                    "Esse indicador ajuda a medir o volume de trabalho acumulado e o nível de controle da operação."
+                )
+
+                st.subheader("Distribuição mensal do backlog")
+
+                if not backlog_mensal.empty:
+                    st.line_chart(
+                        backlog_mensal.set_index("mes")["backlog"]
+                    )
+                else:
+                    st.info("Sem dados para distribuição mensal do backlog.")
         with tab_dashboard:
             st.subheader("Indicadores principais")
 
